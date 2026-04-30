@@ -1,3 +1,5 @@
+import { prisma } from "../../db/prisma";
+
 export type ConversationStep =
   | "START"
   | "CHOOSING_SERVICE"
@@ -10,19 +12,62 @@ export type ConversationState = {
   dateText?: string;
 };
 
-const conversations = new Map<string, ConversationState>();
+export const getConversation = async (
+  businessId: string,
+  phone: string
+): Promise<ConversationState> => {
+  const conversation = await prisma.conversation.findUnique({
+    where: {
+      businessId_customerPhone: {
+        businessId,
+        customerPhone: phone,
+      },
+    },
+  });
 
-export const getConversation = (phone: string): ConversationState => {
-  return conversations.get(phone) || { step: "START" };
+  if (!conversation) {
+    return { step: "START" };
+  }
+
+  return {
+    step: conversation.step as ConversationStep,
+    service: conversation.serviceName || undefined,
+    dateText: conversation.dateText || undefined,
+  };
 };
 
-export const saveConversation = (
+export const saveConversation = async (
+  businessId: string,
   phone: string,
   state: ConversationState
 ) => {
-  conversations.set(phone, state);
+  await prisma.conversation.upsert({
+    where: {
+      businessId_customerPhone: {
+        businessId,
+        customerPhone: phone,
+      },
+    },
+    update: {
+      step: state.step,
+      serviceName: state.service,
+      dateText: state.dateText,
+    },
+    create: {
+      businessId,
+      customerPhone: phone,
+      step: state.step,
+      serviceName: state.service,
+      dateText: state.dateText,
+    },
+  });
 };
 
-export const clearConversation = (phone: string) => {
-  conversations.delete(phone);
+export const clearConversation = async (businessId: string, phone: string) => {
+  await prisma.conversation.deleteMany({
+    where: {
+      businessId,
+      customerPhone: phone,
+    },
+  });
 };

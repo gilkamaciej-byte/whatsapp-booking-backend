@@ -1,42 +1,56 @@
 import { Request, Response } from "express";
 import twilio from "twilio";
+import { prisma } from "../../db/prisma";
 import { createAppointment } from "../appointments/createAppointment";
 import {
   getConversation,
   saveConversation,
   clearConversation,
 } from "../conversations/conversationStore";
-import {
-  findService,
-  servicesListText,
-} from "../businesses/services";
+import { findService, servicesListText } from "../businesses/services";
 
 export const whatsappWebhook = async (req: Request, res: Response) => {
   const message = req.body?.Body?.trim() || "";
   const lowerMessage = message.toLowerCase();
+  const to = req.body?.To || "";
   const from = req.body?.From || "";
-
-  console.log("Nowa wiadomość:", { from, message });
-
   const twiml = new twilio.twiml.MessagingResponse();
 
-  const conversation = getConversation(from);
+  const business = await prisma.business.findUnique({
+    where: {
+      phoneNumber: to,
+    },
+  });
+
+  if (!business) {
+    twiml.message("Ten numer nie jest skonfigurowany.");
+    return res.type("text/xml").send(twiml.toString());
+  }
+
+  console.log("Nowa wiadomość:", {
+    businessId: business.id,
+    to,
+    from,
+    message,
+  });
+
+  const conversation = await getConversation(business.id, from);
   const step = conversation.step;
 
-  // RESET
   if (lowerMessage === "reset") {
-    clearConversation(from);
+    await clearConversation(business.id, from);
     twiml.message("Rozmowa zresetowana. Napisz 'wizyta', aby zacząć od nowa.");
     return res.type("text/xml").send(twiml.toString());
   }
 
-  // START
   if (step === "START") {
     if (lowerMessage.includes("wizyta")) {
-      saveConversation(from, { step: "CHOOSING_SERVICE" });
+      await saveConversation(business.id, from, { step: "CHOOSING_SERVICE" });
 
       twiml.message(
-        `Super 👍 Jaką usługę chcesz zarezerwować?\n\nDostępne usługi:\n${servicesListText()}`
+        `Super 👌 Jaką usługę chcesz zarezerwować?\n\nDostępne usługi:\n${await servicesListText(
+          business.id
+        )}`
       );
     } else {
       twiml.message(
@@ -47,33 +61,33 @@ export const whatsappWebhook = async (req: Request, res: Response) => {
     return res.type("text/xml").send(twiml.toString());
   }
 
-  // WYBÓR USŁUGI
   if (step === "CHOOSING_SERVICE") {
-    const selectedService = findService(message);
+    const selectedService = await findService(business.id, message);
 
     if (!selectedService) {
       twiml.message(
-        `Nie mam takiej usługi w ofercie.\n\nDostępne usługi:\n${servicesListText()}\n\nNapisz nazwę jednej z nich.`
+        `Nie mam takiej usługi w ofercie.\n\nDostępne usługi:\n${await servicesListText(
+          business.id
+        )}\n\nNapisz nazwę albo numer jednej z nich.`
       );
 
       return res.type("text/xml").send(twiml.toString());
     }
 
-    saveConversation(from, {
+    await saveConversation(business.id, from, {
       step: "CHOOSING_DATE",
-      service: selectedService,
+      service: selectedService.name,
     });
 
     twiml.message(
-      `Wybrana usługa: ${selectedService}.\nKiedy chcesz umówić wizytę? Np. "jutro 15:00".`
+      `Wybrana usługa: ${selectedService.name}.\nKiedy chcesz umówić wizytę? Np. "jutro 15:00".`
     );
 
     return res.type("text/xml").send(twiml.toString());
   }
 
-  // WYBÓR DATY
   if (step === "CHOOSING_DATE") {
-    saveConversation(from, {
+    await saveConversation(business.id, from, {
       ...conversation,
       step: "CONFIRMING",
       dateText: message,
@@ -86,20 +100,20 @@ export const whatsappWebhook = async (req: Request, res: Response) => {
     return res.type("text/xml").send(twiml.toString());
   }
 
-  // POTWIERDZENIE
   if (step === "CONFIRMING") {
     if (["tak", "potwierdzam", "ok", "okej"].includes(lowerMessage)) {
       await createAppointment({
+        businessId: business.id,
         phone: from,
         serviceName: conversation.service!,
         dateText: conversation.dateText!,
-      })
-      
+      });
+
       twiml.message(
         `Gotowe ✅ Twoja wizyta została zapisana.\n\nUsługa: ${conversation.service}\nTermin: ${conversation.dateText}`
       );
 
-      clearConversation(from);
+      await clearConversation(business.id, from);
     } else {
       twiml.message(
         `Nie potwierdziłem wizyty.\nOdpisz "tak", żeby potwierdzić albo "reset", żeby zacząć od nowa.`
@@ -109,7 +123,6 @@ export const whatsappWebhook = async (req: Request, res: Response) => {
     return res.type("text/xml").send(twiml.toString());
   }
 
-  // FALLBACK
   twiml.message("Coś poszło nie tak. Napisz 'reset', aby zacząć od nowa.");
   return res.type("text/xml").send(twiml.toString());
 };
