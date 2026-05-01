@@ -1,7 +1,12 @@
 node_modules/
 .env
 .env.*
+!.env.example
 dist/
 build/
 logs/
 *.log
+*.service-account.json
+*service-account*.json
+google-calendar-key.json
+src/modules/calendar/*.json

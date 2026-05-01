@@ -1,7 +1,12 @@
 import { Request, Response } from "express";
 import twilio from "twilio";
 import { prisma } from "../../db/prisma";
-import { createAppointment } from "../appointments/createAppointment";
+import {
+  AppointmentConflictError,
+  AppointmentDateParseError,
+  AppointmentOutsideBusinessHoursError,
+  createAppointment,
+} from "../appointments/createAppointment";
 import {
   getConversation,
   saveConversation,
@@ -102,12 +107,55 @@ export const whatsappWebhook = async (req: Request, res: Response) => {
 
   if (step === "CONFIRMING") {
     if (["tak", "potwierdzam", "ok", "okej"].includes(lowerMessage)) {
-      await createAppointment({
-        businessId: business.id,
-        phone: from,
-        serviceName: conversation.service!,
-        dateText: conversation.dateText!,
-      });
+      try {
+        await createAppointment({
+          businessId: business.id,
+          phone: from,
+          serviceName: conversation.service!,
+          dateText: conversation.dateText!,
+        });
+      } catch (error) {
+        if (error instanceof AppointmentConflictError) {
+          await saveConversation(business.id, from, {
+            step: "CHOOSING_DATE",
+            service: conversation.service,
+          });
+
+          twiml.message(
+            `Ten termin jest juz zajety. Podaj inna godzine dla uslugi: ${conversation.service}.`
+          );
+
+          return res.type("text/xml").send(twiml.toString());
+        }
+
+        if (error instanceof AppointmentDateParseError) {
+          await saveConversation(business.id, from, {
+            step: "CHOOSING_DATE",
+            service: conversation.service,
+          });
+
+          twiml.message(
+            `Nie rozumiem tego terminu. Podaj go jeszcze raz, np. "morgen 16:30".`
+          );
+
+          return res.type("text/xml").send(twiml.toString());
+        }
+
+        if (error instanceof AppointmentOutsideBusinessHoursError) {
+          await saveConversation(business.id, from, {
+            step: "CHOOSING_DATE",
+            service: conversation.service,
+          });
+
+          twiml.message(
+            `Ten termin jest poza godzinami pracy. Podaj inna godzine dla uslugi: ${conversation.service}.`
+          );
+
+          return res.type("text/xml").send(twiml.toString());
+        }
+
+        throw error;
+      }
 
       twiml.message(
         `Gotowe ✅ Twoja wizyta została zapisana.\n\nUsługa: ${conversation.service}\nTermin: ${conversation.dateText}`

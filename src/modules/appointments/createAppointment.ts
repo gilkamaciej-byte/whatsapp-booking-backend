@@ -1,5 +1,34 @@
 import { prisma } from "../../db/prisma";
+import { isWithinBusinessHours } from "../businesses/businessHours";
+import { createGoogleCalendarEvent } from "../calendar/googleCalendar";
 import { parseDate } from "../../utils/parseDate";
+
+export class AppointmentDateParseError extends Error {
+  constructor() {
+    super("Could not parse appointment date");
+    this.name = "AppointmentDateParseError";
+  }
+}
+
+export class AppointmentConflictError extends Error {
+  constructor(
+    public readonly conflictingAppointment: {
+      id: string;
+      startTime: Date;
+      endTime: Date;
+    }
+  ) {
+    super("Appointment time conflicts with an existing appointment");
+    this.name = "AppointmentConflictError";
+  }
+}
+
+export class AppointmentOutsideBusinessHoursError extends Error {
+  constructor() {
+    super("Appointment time is outside business hours");
+    this.name = "AppointmentOutsideBusinessHoursError";
+  }
+}
 
 export const createAppointment = async ({
   businessId,
@@ -12,6 +41,14 @@ export const createAppointment = async ({
   serviceName: string;
   dateText: string;
 }) => {
+  const business = await prisma.business.findUnique({
+    where: { id: businessId },
+  });
+
+  if (!business) {
+    throw new Error("Business not found");
+  }
+
   const service = await prisma.service.findFirst({
     where: {
       businessId,
@@ -42,7 +79,7 @@ export const createAppointment = async ({
   const parsedDate = parseDate(dateText);
 
   if (!parsedDate) {
-    throw new Error("Nie rozumiem daty");
+    throw new AppointmentDateParseError();
   }
 
   const startTime = parsedDate;
@@ -50,7 +87,40 @@ export const createAppointment = async ({
     startTime.getTime() + service.durationMinutes * 60 * 1000
   );
 
-  return prisma.appointment.create({
+  const withinBusinessHours = await isWithinBusinessHours({
+    businessId,
+    startTime,
+    endTime,
+  });
+
+  if (!withinBusinessHours) {
+    throw new AppointmentOutsideBusinessHoursError();
+  }
+
+  const conflictingAppointment = await prisma.appointment.findFirst({
+    where: {
+      businessId,
+      startTime: {
+        lt: endTime,
+      },
+      endTime: {
+        gt: startTime,
+      },
+    },
+    orderBy: {
+      startTime: "asc",
+    },
+  });
+
+  if (conflictingAppointment) {
+    throw new AppointmentConflictError({
+      id: conflictingAppointment.id,
+      startTime: conflictingAppointment.startTime,
+      endTime: conflictingAppointment.endTime,
+    });
+  }
+
+  const appointment = await prisma.appointment.create({
     data: {
       businessId,
       customerId: customer.id,
@@ -59,4 +129,27 @@ export const createAppointment = async ({
       endTime,
     },
   });
+
+  try {
+    const googleCalendarEventId = await createGoogleCalendarEvent({
+      appointment,
+      business,
+      customer,
+      service,
+    });
+
+    if (googleCalendarEventId) {
+      return prisma.appointment.update({
+        where: { id: appointment.id },
+        data: { googleCalendarEventId },
+      });
+    }
+  } catch (error) {
+    console.error("Nie udalo sie utworzyc wydarzenia Google Calendar", {
+      appointmentId: appointment.id,
+      error,
+    });
+  }
+
+  return appointment;
 };

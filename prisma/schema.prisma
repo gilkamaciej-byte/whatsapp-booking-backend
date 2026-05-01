@@ -8,16 +8,31 @@ datasource db {
 }
 
 model Business {
-  id          String   @id @default(uuid())
-  name        String
-  phoneNumber String   @unique
-  timezone    String   @default("Europe/Warsaw")
-  createdAt   DateTime @default(now())
+  id               String   @id @default(uuid())
+  name             String
+  phoneNumber      String   @unique
+  timezone         String   @default("Europe/Warsaw")
+  googleCalendarId String?
+  createdAt        DateTime @default(now())
 
-  services     Service[]
-  customers    Customer[]
-  appointments Appointment[]
+  services      Service[]
+  customers     Customer[]
+  appointments  Appointment[]
   conversations Conversation[]
+  businessHours BusinessHours[]
+}
+
+model BusinessHours {
+  id         String  @id @default(uuid())
+  businessId String
+  dayOfWeek  Int
+  opensAt    String
+  closesAt   String
+  isClosed   Boolean @default(false)
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([businessId, dayOfWeek])
 }
 
 model Service {
@@ -51,6 +66,7 @@ model Appointment {
 
   startTime DateTime
   endTime   DateTime
+  googleCalendarEventId String?
 
   business Business @relation(fields: [businessId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
